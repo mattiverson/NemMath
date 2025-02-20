@@ -1,180 +1,99 @@
-#include <cstring>
-#include <limits>
-#include <cmath>
-#include <random>
-
 #include "common.h"
 #include "nem_math.h"
 
-float U32BitsAsFloat(U32 x)
-{
-    float d;
-    memcpy(&d, &x, 4);
-    return d;
-}
+#include <cstring>
+#include <cmath>
+#include <random>
 
-__m256 GetUlp(__m256 x)
-{
-    constexpr float kMinNorm = std::numeric_limits<float>::min();
-    __m256 ulp = _mm256_and_ps(
-        _mm256_sub_ps(x, _mm256_xor_ps(x, _mm256_castsi256_ps(_mm256_set1_epi32(0x00000001)))), _mm256_castsi256_ps(_mm256_set1_epi32(0x7fff'ffff)));
-    return _mm256_max_ps(ulp, _mm256_set1_ps(kMinNorm));
-}
-
-__m512 GetUlp(__m512 x)
-{
-    constexpr float kMinNorm = std::numeric_limits<float>::min();
-    __m512 ulp = _mm512_abs_ps(
-        _mm512_sub_ps(x, _mm512_xor_ps(x, _mm512_castsi512_ps(_mm512_set1_epi32(0x00000001)))));
-    return _mm512_max_ps(ulp, _mm512_set1_ps(kMinNorm));
-}
-
-float GetUlp(float x) { return _mm512_cvtss_f32(GetUlp(_mm512_castps128_ps512(_mm_set_ss(x)))); }
-
-float Min(float a, float b) { return a < b ? a : b; }
+#define TEST_FXN Acos
+#define REF_FXN acos
+#define REF_FXN_FLOAT acosf
+static constexpr float a = -1.0f;
+static constexpr float b =  1.0f;
+static constexpr float kStepSize = 0x1p-25f;
 
 float CalcAccuracy()
 {
-    __m512 maxAbsErr = _mm512_setzero_ps();
-    __m512 minAbsErr = _mm512_setzero_ps();
-    __m512 sumSqrAbsErr = _mm512_setzero_ps();
-    __m512 maxRelErr = _mm512_setzero_ps();
-    __m512 minRelErr = _mm512_setzero_ps();
-    __m512 sumSqrRelErr = _mm512_setzero_ps();
-    __m512 maxUlpErr = _mm512_setzero_ps();
-    __m512 minUlpErr = _mm512_setzero_ps();
-    __m512 sumSqrUlpErr = _mm512_setzero_ps();
+    __m256 maxAbsErr = _mm256_setzero_ps();
+    __m256 minAbsErr = _mm256_setzero_ps();
+    __m256 sumSqrAbsErr = _mm256_setzero_ps();
+    __m256 maxRelErr = _mm256_setzero_ps();
+    __m256 minRelErr = _mm256_setzero_ps();
+    __m256 sumSqrRelErr = _mm256_setzero_ps();
+    __m256 maxUlpErr = _mm256_setzero_ps();
+    __m256 minUlpErr = _mm256_setzero_ps();
+    __m256 sumSqrUlpErr = _mm256_setzero_ps();
 
-    //static constexpr float a = 0.5f + 0x1p-24f;
-    //static constexpr float b = 1.0f;
-    static constexpr float a = 1.0f;
-    static constexpr float b = 16.0f;
-    //const float stepSize = Min(GetUlp(a), GetUlp(b));
-    const float stepSize = 0x1p-23f;
-    const U32 nSteps = _mm_cvtss_i32(_mm_div_round_ss(
-        _mm_set_ss(b - a), _mm_set_ss(stepSize), _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC));
-    for (U32 i = 0; i < nSteps; i += 16)
+    const U32 nSteps = _mm_cvt_ss2si(_mm_div_ps(
+        _mm_set_ss(b - a), _mm_set_ss(kStepSize)));
+    for (U32 i = 0; i < nSteps; i += 8)
     {
         // build the next floats to test, and evaluate ref and impl
-        alignas(64) float x[16];
-        alignas(64) double ref[16];
-        for (U32 j = 0; j < 16; ++j)
+        alignas(64) float x[8];
+        alignas(64) double ref[8];
+        for (U32 j = 0; j < 8; ++j)
         {
             U32 k = i + j;
-            x[j] = a + stepSize * float(k);
-            ref[j] = std::log2(double(x[j]));
+            x[j] = a + kStepSize * float(k);
+            ref[j] = REF_FXN(double(x[j]));
         }
-        const __m512 xm = _mm512_loadu_ps(x);
-        const __m512 ym = Log2f(xm);
-        const __mmask16 outOfBounds = _mm512_cmp_ps_mask(xm, _mm512_set1_ps(b), _CMP_GT_OQ);
+        const __m256 xm = _mm256_loadu_ps(x);
+        const __m256 ym = TEST_FXN(xm);
+        const __m256 outOfBounds = _mm256_cmp_ps(xm, _mm256_set1_ps(b), _CMP_GT_OQ);
 
         // compute abs error in double precision
-        const __m512d yLo = _mm512_cvtps_pd(_mm512_castps512_ps256(ym));
-        const __m512d yHi = _mm512_cvtps_pd(_mm512_extractf32x8_ps(ym, 1));
-        const __m512d refLo = _mm512_loadu_pd(ref);
-        const __m512d refHi = _mm512_loadu_pd(ref + 8);
-        const __m512d absErrLo = _mm512_sub_pd(yLo, refLo);
-        const __m512d absErrHi = _mm512_sub_pd(yHi, refHi);
-        __m512 absErr = _mm512_broadcast_f32x8(_mm512_cvtpd_ps(absErrLo));
-        absErr = _mm512_insertf32x8(absErr, _mm512_cvtpd_ps(absErrHi), 1);
-        absErr = _mm512_mask_and_ps(absErr, outOfBounds, absErr, _mm512_setzero_ps());
+        const __m256d yLo = _mm256_cvtps_pd(_mm256_castps256_ps128(ym));
+        const __m256d yHi = _mm256_cvtps_pd(_mm256_extractf128_ps(ym, 1));
+        const __m256d refLo = _mm256_loadu_pd(ref);
+        const __m256d refHi = _mm256_loadu_pd(ref + 4);
+        const __m256d absErrLo = _mm256_sub_pd(yLo, refLo);
+        const __m256d absErrHi = _mm256_sub_pd(yHi, refHi);
+        __m256 absErr = _mm256_setr_m128(_mm256_cvtpd_ps(absErrLo), _mm256_cvtpd_ps(absErrHi));
+        absErr = _mm256_andnot_ps(outOfBounds, absErr);
+        if (ReduceMax(absErr) > 1e-3f)
+        {
+            printf("Dammit\n");
+        }
 
         // compute absolute and relative error
-        __m512 ulp = GetUlp(ym);
-        __m512 relErr = _mm512_div_ps(
+        __m256 ulp = GetUlp(ym);
+        __m256 relErr = _mm256_div_ps(
             absErr,
-            _mm512_abs_ps(_mm512_fmadd_ps(_mm512_set1_ps(stepSize), _mm512_set1_ps(0x1p-30f), ym)));
-        __m512 ulpErr = _mm512_div_ps(absErr, ulp);
-        maxAbsErr = _mm512_max_ps(maxAbsErr, absErr);
-        minAbsErr = _mm512_min_ps(minAbsErr, absErr);
-        sumSqrAbsErr = _mm512_fmadd_ps(absErr, absErr, sumSqrAbsErr);
-        maxRelErr = _mm512_max_ps(maxRelErr, relErr);
-        minRelErr = _mm512_min_ps(minRelErr, relErr);
-        sumSqrRelErr = _mm512_fmadd_ps(relErr, relErr, sumSqrRelErr);
-        maxUlpErr = _mm512_max_ps(maxUlpErr, ulpErr);
-        minUlpErr = _mm512_min_ps(minUlpErr, ulpErr);
-        sumSqrUlpErr = _mm512_fmadd_ps(ulpErr, ulpErr, sumSqrUlpErr);
-
-        //maxUlpErr = _mm512_max_ps(maxUlpErr, _mm512_shuffle_f32x4(maxUlpErr, maxUlpErr, 177));
-        //maxUlpErr = _mm512_max_ps(maxUlpErr, _mm512_shuffle_f32x4(maxUlpErr, maxUlpErr, 78));
-        //maxUlpErr = _mm512_max_ps(maxUlpErr, _mm512_shuffle_ps(maxUlpErr, maxUlpErr, 177));
-        //maxUlpErr = _mm512_max_ps(maxUlpErr, _mm512_shuffle_ps(maxUlpErr, maxUlpErr, 78));
-        //minUlpErr = _mm512_min_ps(minUlpErr, _mm512_shuffle_f32x4(minUlpErr, minUlpErr, 177));
-        //minUlpErr = _mm512_min_ps(minUlpErr, _mm512_shuffle_f32x4(minUlpErr, minUlpErr, 78));
-        //minUlpErr = _mm512_min_ps(minUlpErr, _mm512_shuffle_ps(minUlpErr, minUlpErr, 177));
-        //minUlpErr = _mm512_min_ps(minUlpErr, _mm512_shuffle_ps(minUlpErr, minUlpErr, 78));
-        //if (_mm512_cvtss_f32(minUlpErr) < -10.0f)
-        //{
-        //    printf("Breakpoint me\n");
-        //}
+            Abs(_mm256_fmadd_ps(_mm256_set1_ps(kStepSize), _mm256_set1_ps(0x1p-30f), ym)));
+        __m256 ulpErr = _mm256_div_ps(absErr, ulp);
+        maxAbsErr = _mm256_max_ps(maxAbsErr, absErr);
+        minAbsErr = _mm256_min_ps(minAbsErr, absErr);
+        sumSqrAbsErr = _mm256_fmadd_ps(absErr, absErr, sumSqrAbsErr);
+        maxRelErr = _mm256_max_ps(maxRelErr, relErr);
+        minRelErr = _mm256_min_ps(minRelErr, relErr);
+        sumSqrRelErr = _mm256_fmadd_ps(relErr, relErr, sumSqrRelErr);
+        maxUlpErr = _mm256_max_ps(maxUlpErr, ulpErr);
+        minUlpErr = _mm256_min_ps(minUlpErr, ulpErr);
+        sumSqrUlpErr = _mm256_fmadd_ps(ulpErr, ulpErr, sumSqrUlpErr);
     }
 
-    // reduce errors from vectors of 16 to single values
-    maxAbsErr = _mm512_max_ps(maxAbsErr, _mm512_shuffle_f32x4(maxAbsErr, maxAbsErr, 177));
-    maxAbsErr = _mm512_max_ps(maxAbsErr, _mm512_shuffle_f32x4(maxAbsErr, maxAbsErr, 78));
-    maxAbsErr = _mm512_max_ps(maxAbsErr, _mm512_shuffle_ps(maxAbsErr, maxAbsErr, 177));
-    maxAbsErr = _mm512_max_ps(maxAbsErr, _mm512_shuffle_ps(maxAbsErr, maxAbsErr, 78));
-    minAbsErr = _mm512_min_ps(minAbsErr, _mm512_shuffle_f32x4(minAbsErr, minAbsErr, 177));
-    minAbsErr = _mm512_min_ps(minAbsErr, _mm512_shuffle_f32x4(minAbsErr, minAbsErr, 78));
-    minAbsErr = _mm512_min_ps(minAbsErr, _mm512_shuffle_ps(minAbsErr, minAbsErr, 177));
-    minAbsErr = _mm512_min_ps(minAbsErr, _mm512_shuffle_ps(minAbsErr, minAbsErr, 78));
-    sumSqrAbsErr =
-        _mm512_add_ps(sumSqrAbsErr, _mm512_shuffle_f32x4(sumSqrAbsErr, sumSqrAbsErr, 177));
-    sumSqrAbsErr =
-        _mm512_add_ps(sumSqrAbsErr, _mm512_shuffle_f32x4(sumSqrAbsErr, sumSqrAbsErr, 78));
-    sumSqrAbsErr = _mm512_add_ps(sumSqrAbsErr, _mm512_shuffle_ps(sumSqrAbsErr, sumSqrAbsErr, 177));
-    sumSqrAbsErr = _mm512_add_ps(sumSqrAbsErr, _mm512_shuffle_ps(sumSqrAbsErr, sumSqrAbsErr, 78));
-    sumSqrAbsErr = _mm512_sqrt_ps(_mm512_div_ps(sumSqrAbsErr, _mm512_set1_ps(float(nSteps))));
-    maxRelErr = _mm512_max_ps(maxRelErr, _mm512_shuffle_f32x4(maxRelErr, maxRelErr, 177));
-    maxRelErr = _mm512_max_ps(maxRelErr, _mm512_shuffle_f32x4(maxRelErr, maxRelErr, 78));
-    maxRelErr = _mm512_max_ps(maxRelErr, _mm512_shuffle_ps(maxRelErr, maxRelErr, 177));
-    maxRelErr = _mm512_max_ps(maxRelErr, _mm512_shuffle_ps(maxRelErr, maxRelErr, 78));
-    minRelErr = _mm512_min_ps(minRelErr, _mm512_shuffle_f32x4(minRelErr, minRelErr, 177));
-    minRelErr = _mm512_min_ps(minRelErr, _mm512_shuffle_f32x4(minRelErr, minRelErr, 78));
-    minRelErr = _mm512_min_ps(minRelErr, _mm512_shuffle_ps(minRelErr, minRelErr, 177));
-    minRelErr = _mm512_min_ps(minRelErr, _mm512_shuffle_ps(minRelErr, minRelErr, 78));
-    sumSqrRelErr =
-        _mm512_add_ps(sumSqrRelErr, _mm512_shuffle_f32x4(sumSqrRelErr, sumSqrRelErr, 177));
-    sumSqrRelErr =
-        _mm512_add_ps(sumSqrRelErr, _mm512_shuffle_f32x4(sumSqrRelErr, sumSqrRelErr, 78));
-    sumSqrRelErr = _mm512_add_ps(sumSqrRelErr, _mm512_shuffle_ps(sumSqrRelErr, sumSqrRelErr, 177));
-    sumSqrRelErr = _mm512_add_ps(sumSqrRelErr, _mm512_shuffle_ps(sumSqrRelErr, sumSqrRelErr, 78));
-    sumSqrRelErr = _mm512_sqrt_ps(_mm512_div_ps(sumSqrRelErr, _mm512_set1_ps(float(nSteps))));
-    maxUlpErr = _mm512_max_ps(maxUlpErr, _mm512_shuffle_f32x4(maxUlpErr, maxUlpErr, 177));
-    maxUlpErr = _mm512_max_ps(maxUlpErr, _mm512_shuffle_f32x4(maxUlpErr, maxUlpErr, 78));
-    maxUlpErr = _mm512_max_ps(maxUlpErr, _mm512_shuffle_ps(maxUlpErr, maxUlpErr, 177));
-    maxUlpErr = _mm512_max_ps(maxUlpErr, _mm512_shuffle_ps(maxUlpErr, maxUlpErr, 78));
-    minUlpErr = _mm512_min_ps(minUlpErr, _mm512_shuffle_f32x4(minUlpErr, minUlpErr, 177));
-    minUlpErr = _mm512_min_ps(minUlpErr, _mm512_shuffle_f32x4(minUlpErr, minUlpErr, 78));
-    minUlpErr = _mm512_min_ps(minUlpErr, _mm512_shuffle_ps(minUlpErr, minUlpErr, 177));
-    minUlpErr = _mm512_min_ps(minUlpErr, _mm512_shuffle_ps(minUlpErr, minUlpErr, 78));
-    sumSqrUlpErr =
-        _mm512_add_ps(sumSqrUlpErr, _mm512_shuffle_f32x4(sumSqrUlpErr, sumSqrUlpErr, 177));
-    sumSqrUlpErr =
-        _mm512_add_ps(sumSqrUlpErr, _mm512_shuffle_f32x4(sumSqrUlpErr, sumSqrUlpErr, 78));
-    sumSqrUlpErr = _mm512_add_ps(sumSqrUlpErr, _mm512_shuffle_ps(sumSqrUlpErr, sumSqrUlpErr, 177));
-    sumSqrUlpErr = _mm512_add_ps(sumSqrUlpErr, _mm512_shuffle_ps(sumSqrUlpErr, sumSqrUlpErr, 78));
-    sumSqrUlpErr = _mm512_sqrt_ps(_mm512_div_ps(sumSqrUlpErr, _mm512_set1_ps(float(nSteps))));
+    // reduce errors down to single values
+    float rmsAbsErr = sqrt(ReduceAdd(sumSqrAbsErr) / float(nSteps));
+    float rmsRelErr = sqrt(ReduceAdd(sumSqrRelErr) / float(nSteps));
+    float rmsUlpErr = sqrt(ReduceAdd(sumSqrUlpErr) / float(nSteps));
     printf("Error profile for [%f, %f): \n", a, b);
     printf("    Abs err: (%g, %g); RMS %g\n",
-           _mm512_cvtss_f32(minAbsErr),
-           _mm512_cvtss_f32(maxAbsErr),
-           _mm512_cvtss_f32(sumSqrAbsErr));
+           ReduceMin(minAbsErr),
+           ReduceMax(maxAbsErr),
+           rmsAbsErr);
     printf("    Rel err: (%g, %g); RMS %g\n",
-           _mm512_cvtss_f32(minRelErr),
-           _mm512_cvtss_f32(maxRelErr),
-           _mm512_cvtss_f32(sumSqrRelErr));
+           ReduceMin(minRelErr),
+           ReduceMax(maxRelErr),
+           rmsRelErr);
     printf("    Ulp err: (%g, %g); RMS %g\n",
-           _mm512_cvtss_f32(minUlpErr),
-           _mm512_cvtss_f32(maxUlpErr),
-           _mm512_cvtss_f32(sumSqrUlpErr));
-    return _mm512_cvtss_f32(sumSqrUlpErr);
+           ReduceMin(minUlpErr),
+           ReduceMax(maxUlpErr),
+           rmsUlpErr);
+    return rmsUlpErr;
 }
 
 void WriteToFile()
 {
-    static constexpr float a = 1.0f;
-    static constexpr float b = 2.0f;
     constexpr int N = (1 << 15) + 1;
     constexpr int NAlloc = (N + 15) & -16;
     constexpr float step = (b - a) / float(N - 1);
@@ -195,25 +114,25 @@ void WriteToFile()
     for (int i = 0; i < N; ++i)
     {
         x[i] = a + step * float(i);
-        ref[i] = std::log2(double{ x[i] });
-        reff[i] = std::log2f(x[i]);
+        ref[i] = REF_FXN(double(x[i]));
+        reff[i] = REF_FXN_FLOAT(x[i]);
         stlErr[i] = float(double(reff[i]) - ref[i]) / GetUlp(reff[i]);
     }
-    for (int i = 0; i < N; i += 16)
+    for (int i = 0; i < N; i += 8)
     {
-        const __m512 xm = _mm512_loadu_ps(x + i);
-        const __m512 ym = Log2f(xm);
-        const __m512d yLo = _mm512_cvtps_pd(_mm512_extractf32x8_ps(ym, 0));
-        const __m512d yHi = _mm512_cvtps_pd(_mm512_extractf32x8_ps(ym, 1));
-        const __m512d deltaLo = _mm512_sub_pd(yLo, _mm512_load_pd(ref + i));
-        const __m512d deltaHi = _mm512_sub_pd(yHi, _mm512_load_pd(ref + i + 8));
-        _mm256_storeu_ps(absErr + i, _mm512_cvtpd_ps(deltaLo));
-        _mm256_storeu_ps(absErr + i + 8, _mm512_cvtpd_ps(deltaHi));
-        const __m512 absErrM = _mm512_load_ps(absErr + i);
-        __m512 ulp = GetUlp(ym);
-        __m512 relErrM = _mm512_div_ps(absErrM, ulp);
-        _mm512_storeu_ps(relErr + i, relErrM);
-        _mm512_storeu_ps(y + i, ym);
+        const __m256 xm = _mm256_loadu_ps(x + i);
+        const __m256 ym = TEST_FXN(xm);
+        const __m256d yLo = _mm256_cvtps_pd(_mm256_extractf128_ps(ym, 0));
+        const __m256d yHi = _mm256_cvtps_pd(_mm256_extractf128_ps(ym, 1));
+        const __m256d deltaLo = _mm256_sub_pd(yLo, _mm256_load_pd(ref + i));
+        const __m256d deltaHi = _mm256_sub_pd(yHi, _mm256_load_pd(ref + i + 4));
+        _mm_storeu_ps(absErr + i, _mm256_cvtpd_ps(deltaLo));
+        _mm_storeu_ps(absErr + i + 4, _mm256_cvtpd_ps(deltaHi));
+        const __m256 absErrM = _mm256_load_ps(absErr + i);
+        __m256 ulp = GetUlp(ym);
+        __m256 relErrM = _mm256_div_ps(absErrM, ulp);
+        _mm256_storeu_ps(relErr + i, relErrM);
+        _mm256_storeu_ps(y + i, ym);
     }
     FILE* outFile = fopen("AccuracyData.bin", "wb");
     fwrite(&N, sizeof(int), 1, outFile);
@@ -227,165 +146,223 @@ void WriteToFile()
     fclose(outFile);
 }
 
-__m512 __vectorcall Log2f(__m512 x, float* coefs)
+void RunNear(float near, float stride = kStepSize)
 {
-    __m512i exp = _mm512_and_si512(_mm512_castps_si512(x), _mm512_set1_epi32(0xff80'0000));
-    __m512i mant = _mm512_ternarylogic_epi32(_mm512_set1_epi32(0xff80'0000),
-                                             _mm512_castps_si512(x),
-                                             _mm512_set1_epi32(0x3f80'0000),
-                                             0xac);
-    exp = _mm512_srai_epi32(exp, 23);
-    const __m512i bad = _mm512_sub_epi32(exp, _mm512_set1_epi32(1));
-    __m512 base = _mm512_or_ps(_mm512_set1_ps(0x1.8p+23f), _mm512_castsi512_ps(exp));
-    base = _mm512_sub_ps(base, _mm512_set1_ps(0x1.8p+23f + 127.0f));
-    x = _mm512_sub_ps(_mm512_castsi512_ps(mant), _mm512_set1_ps(1.0f));
+    float xArr[8];
+    double refArr[8];
+    for (U32 i = 0; i < 8; ++i)
+    {
+        xArr[i] = near + float(I32(i) - 4) * stride;
+        refArr[i] = REF_FXN(double(xArr[i]));
+    }
+    __m256 x = _mm256_loadu_ps(xArr);
+    __m256 y = TEST_FXN(x);
+    const __m256d yLo = _mm256_cvtps_pd(_mm256_extractf128_ps(y, 0));
+    const __m256d yHi = _mm256_cvtps_pd(_mm256_extractf128_ps(y, 1));
+    const __m256d deltaLo = _mm256_sub_pd(yLo, _mm256_load_pd(refArr));
+    const __m256d deltaHi = _mm256_sub_pd(yHi, _mm256_load_pd(refArr + 4));
 
-    __m512 res = _mm512_set1_ps(coefs[0]);
-    res = _mm512_fmadd_ps(res, x, _mm512_set1_ps(coefs[1]));
-    res = _mm512_fmadd_ps(res, x, _mm512_set1_ps(coefs[2]));
-    res = _mm512_fmadd_ps(res, x, _mm512_set1_ps(coefs[3]));
-    res = _mm512_fmadd_ps(res, x, _mm512_set1_ps(coefs[4]));
-    res = _mm512_fmadd_ps(res, x, _mm512_set1_ps(coefs[5]));
-    res = _mm512_fmadd_ps(res, x, _mm512_set1_ps(coefs[6]));
-    res = _mm512_fmadd_ps(res, x, _mm512_set1_ps(coefs[7]));
-    res = _mm512_fmadd_ps(res, x, _mm512_set1_ps(coefs[8]));
-    __m512 lastMul = _mm512_castsi512_ps(
-        _mm512_and_epi32(_mm512_srai_epi32(bad, 31), _mm512_set1_epi32(0x7fc0'0000)));
-    lastMul = _mm512_add_ps(lastMul, x);
-    res = _mm512_fmadd_ps(res, lastMul, base);
-    return res;
+    const __m256 absErr = _mm256_setr_m128(_mm256_cvtpd_ps(deltaLo), _mm256_cvtpd_ps(deltaHi));
+    __m256 ulp = GetUlp(y);
+    __m256 relErr = _mm256_div_ps(absErr, ulp);
 }
 
-static __m512i TernBlend(const __m512i mask, const __m512i a, const __m512i b)
+static inline __m256 __vectorcall TEST_FXN(const __m256 x, const float* coefs)
 {
-    return _mm512_ternarylogic_epi32(mask, a, b, 0xac);
+    const __m256 kSignMask = _mm256_set1_ps(-0.0f);
+    const __m256 xAbs = _mm256_andnot_ps(kSignMask, x);
+    __m256 xOuter = _mm256_fnmadd_ps(_mm256_set1_ps(2.0f), xAbs, _mm256_set1_ps(2.0f));
+    const __m256 outerMask = _mm256_cmp_ps(xAbs, _mm256_set1_ps(0.5f), _CMP_GE_OQ);
+    const __m256 signBit = _mm256_castsi256_ps(_mm256_slli_epi32(_mm256_srli_epi32(_mm256_castps_si256(x), 31), 31));
+    const __m256 p = _mm256_blendv_ps(_mm256_mul_ps(x, x), xOuter, outerMask);
+    const __m256 lastMul = _mm256_blendv_ps(x, _mm256_xor_ps(signBit, _mm256_sqrt_ps(xOuter)), outerMask);
+    __m256 yPoly = _mm256_blendv_ps(_mm256_set1_ps(coefs[4]), _mm256_set1_ps(coefs[5+4]), outerMask);
+    yPoly = _mm256_fmadd_ps(
+        yPoly, p, _mm256_blendv_ps(_mm256_set1_ps(coefs[3]), _mm256_set1_ps(coefs[5+3]), outerMask));
+    yPoly = _mm256_fmadd_ps(
+        yPoly, p, _mm256_blendv_ps(_mm256_set1_ps(coefs[2]), _mm256_set1_ps(coefs[5+2]), outerMask));
+    yPoly = _mm256_fmadd_ps(
+        yPoly, p, _mm256_blendv_ps(_mm256_set1_ps(coefs[1]), _mm256_set1_ps(coefs[5+1]), outerMask));
+    yPoly = _mm256_fmadd_ps(
+        yPoly, p, _mm256_blendv_ps(_mm256_set1_ps(coefs[0]), _mm256_set1_ps(coefs[5+0]), outerMask));
+    const __m256 lastP = _mm256_xor_ps(p, _mm256_and_ps(outerMask, kSignMask));
+    yPoly = _mm256_fmadd_ps(yPoly, lastP, _mm256_blendv_ps(_mm256_set1_ps(-1.0f), _mm256_setzero_ps(), outerMask));
+    const __m256 lastAdd = _mm256_blendv_ps(
+        _mm256_set1_ps(0.5f * kPif),
+        _mm256_add_ps(lastMul,
+                      _mm256_and_ps(_mm256_set1_ps(kPif),
+                                    _mm256_castsi256_ps(_mm256_srai_epi32(_mm256_castps_si256(signBit), 31)))), outerMask);
+    return _mm256_fmadd_ps(yPoly, lastMul, lastAdd);
 }
 
-static __m512 TernBlend(const __m512i mask, const __m512 a, const __m512 b)
-{
-    return _mm512_castsi512_ps(
-        _mm512_ternarylogic_epi32(mask, _mm512_castps_si512(a), _mm512_castps_si512(b), 0xac));
-}
+constexpr U32 kWidth = 16;
+constexpr U32 kNumVecs = kWidth / 8;
+static_assert(kWidth % 8 == 0, "Width must be multiple of vector width (8)");
 
-bool UpdateMaxError(__m512& r_argMax,
-                    __m512& r_lowerBound,
-                    __m512& r_upperBound,
+bool UpdateMaxError(__m256(& r_argMax)[2 * kNumVecs],
+                    __m256(& r_lowerBound)[2 * kNumVecs],
+                    __m256(& r_upperBound)[2 * kNumVecs],
                     float& r_maxErr,
-                    float* coefs,
+                    U64& r_numFullEvals,
+                    const float* coefs,
                     const float a,
                     const float b,
                     const float stepSize,
                     const U32 nSteps,
                     const double* ref)
 {
-    __m512 argMax = _mm512_setzero_ps();
-    __m512i argMaxIdx = _mm512_setzero_si512();
-    __m512 maxUlpErr = _mm512_setzero_ps();
-    __m512 idx = _mm512_setr_ps(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-    __m512i im = _mm512_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
-    const __m512 prevMaxErr = _mm512_set1_ps(r_maxErr);
-    for (U32 j = 0; j < nSteps; j += 16)
+
+    __m256i im = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+    alignas(32) U32 argMaxIdx[2*kWidth];
+    alignas(32) float argMax[2*kWidth];
+    alignas(32) float maxUlpErr[2*kWidth];
+    for (U32 i = 0; i < 2*kWidth; ++i)
     {
-        // build the next floats to test, and evaluate ref and impl
-        const __m512 xm = _mm512_fmadd_ps(_mm512_set1_ps(stepSize), idx, _mm512_set1_ps(a));
-        const __m512 ym = Log2f(xm, coefs);
-        const __mmask16 outOfBounds = _mm512_cmp_ps_mask(xm, _mm512_set1_ps(b), _CMP_GT_OQ);
+        argMaxIdx[i] = 0;
+        argMax[i] = 0.0f;
+        maxUlpErr[i] = 0.0f;
+    }
 
-        // compute abs error in double precision
-        const __m512d yLo = _mm512_cvtps_pd(_mm512_castps512_ps256(ym));
-        const __m512d yHi = _mm512_cvtps_pd(_mm512_extractf32x8_ps(ym, 1));
-        const __m512d refLo = _mm512_loadu_pd(ref + j);
-        const __m512d refHi = _mm512_loadu_pd(ref + j + 8);
-        const __m512d absErrLo = _mm512_sub_pd(yLo, refLo);
-        const __m512d absErrHi = _mm512_sub_pd(yHi, refHi);
-        __m512 absErr = _mm512_broadcast_f32x8(_mm512_cvtpd_ps(absErrLo));
-        absErr = _mm512_insertf32x8(absErr, _mm512_cvtpd_ps(absErrHi), 1);
-        absErr = _mm512_mask_and_ps(absErr, outOfBounds, absErr, _mm512_setzero_ps());
+    // Loop through the full range to test, tracking the max error in each of `kWidth` different sections of the domain.
+    for (U32 j = 0; j < nSteps;)
+    {
+        const U32 lane = (j * kWidth) / nSteps;
+        // Build the next floats to test, and evaluate ref and impl.
+        const __m256 xm = _mm256_fmadd_ps(_mm256_set1_ps(stepSize), _mm256_cvtepi32_ps(im), _mm256_set1_ps(a));
+        const __m256 ym = TEST_FXN(xm, coefs);
+        const __m256 outOfBounds = _mm256_cmp_ps(xm, _mm256_set1_ps(b), _CMP_GT_OQ);
 
-        // compute absolute value of ulp error
-        __m512 ulp = GetUlp(ym);
-        __m512 ulpErr = _mm512_abs_ps(_mm512_div_ps(absErr, ulp));
-        const __m512i isMax =
-            _mm512_srai_epi32(_mm512_castps_si512(_mm512_sub_ps(maxUlpErr, ulpErr)), 31);
-        maxUlpErr = TernBlend(isMax, maxUlpErr, ulpErr);
-        argMax = TernBlend(isMax, argMax, xm);
-        argMaxIdx = TernBlend(isMax, argMaxIdx, im);
+        // Compute abs error in double precision.
+        const __m256d yLo = _mm256_cvtps_pd(_mm256_castps256_ps128(ym));
+        const __m256d yHi = _mm256_cvtps_pd(_mm256_extractf128_ps(ym, 1));
+        const __m256d refLo = _mm256_loadu_pd(ref + j);
+        const __m256d refHi = _mm256_loadu_pd(ref + j + 4);
+        const __m256d absErrLo = _mm256_sub_pd(yLo, refLo);
+        const __m256d absErrHi = _mm256_sub_pd(yHi, refHi);
+        __m256 absErr = _mm256_setr_m128(_mm256_cvtpd_ps(absErrLo), _mm256_cvtpd_ps(absErrHi));
+        absErr = _mm256_andnot_ps(outOfBounds, absErr);
 
-        // Check if error exceeds previous best -- if it does, give up.
-        if (_mm512_cmp_ps_mask(maxUlpErr, prevMaxErr, _CMP_GT_OQ))
+        // Update min/max ulp error.
+        __m256 ulp = GetUlp(ym);
+        __m256 ulpErr = _mm256_div_ps(absErr, ulp);
+        float loErr = ReduceMin(ulpErr);
+        float hiErr = ReduceMax(ulpErr);
+        if (loErr < maxUlpErr[lane])
         {
+            maxUlpErr[lane] = loErr;
+            const __m256 isLo = _mm256_cmp_ps(ulpErr, _mm256_set1_ps(loErr), _CMP_EQ_OQ);
+            const __m256 loArgMax = _mm256_blendv_ps(_mm256_set1_ps(-kInf), xm, isLo);
+            const __m256i loArgMaxIdx = _mm256_blendv_epi8(_mm256_setzero_si256(), im, _mm256_castps_si256(isLo));
+            argMax[lane] = ReduceMax(loArgMax);
+            argMaxIdx[lane] = U32(ReduceMaxEpi32(loArgMaxIdx));
+        }
+        if (hiErr > maxUlpErr[lane + kWidth])
+        {
+            maxUlpErr[lane + kWidth] = hiErr;
+            const __m256 isHi = _mm256_cmp_ps(ulpErr, _mm256_set1_ps(hiErr), _CMP_EQ_OQ);
+            const __m256 hiArgMax = _mm256_blendv_ps(_mm256_set1_ps(-kInf), xm, isHi);
+            const __m256i hiArgMaxIdx = _mm256_blendv_epi8(_mm256_setzero_si256(), im, _mm256_castps_si256(isHi));
+            argMax[lane + kWidth] = ReduceMax(hiArgMax);
+            argMaxIdx[lane + kWidth] = U32(ReduceMaxEpi32(hiArgMaxIdx));
+        }
+        im = _mm256_add_epi32(im, _mm256_set1_epi32(8));
+        j += 8;
+
+        // Check if error exceeds previous best -- if it does, quit early.
+        if (loErr <= -r_maxErr || hiErr >= r_maxErr)
+        {
+            r_numFullEvals += j;
             return false;
         }
-
-        idx = _mm512_add_ps(idx, _mm512_set1_ps(16.0f));
-        im = _mm512_add_epi32(im, _mm512_set1_epi32(16));
     }
 
     // Record new max error; recompute upper/lower bounds for argmax cases.
-    r_maxErr = _mm512_reduce_max_ps(maxUlpErr) * (1.0f - 0x1p-20f);
-    const __m512d argMaxRefLo = _mm512_i32gather_pd(_mm512_castsi512_si256(argMaxIdx), ref, 8);
-    const __m512d argMaxRefHi =
-        _mm512_i32gather_pd(_mm512_extracti32x8_epi32(argMaxIdx, 1), ref, 8);
-    const __m512d argMaxUlpLo = _mm512_cvtps_pd(GetUlp(_mm512_cvtpd_ps(argMaxRefLo)));
-    const __m512d argMaxUlpHi = _mm512_cvtps_pd(GetUlp(_mm512_cvtpd_ps(argMaxRefHi)));
-    const __m512d lbLo = _mm512_fnmadd_pd(_mm512_set1_pd(double(r_maxErr)), argMaxUlpLo, argMaxRefLo);
-    const __m512d lbHi = _mm512_fnmadd_pd(_mm512_set1_pd(double(r_maxErr)), argMaxUlpHi, argMaxRefHi);
-    const __m512d ubLo = _mm512_fmadd_pd(_mm512_set1_pd(double(r_maxErr)), argMaxUlpLo, argMaxRefLo);
-    const __m512d ubHi = _mm512_fmadd_pd(_mm512_set1_pd(double(r_maxErr)), argMaxUlpHi, argMaxRefHi);
-    __m512 lowerBound = _mm512_broadcast_f32x8(_mm512_cvtpd_ps(lbLo));
-    lowerBound = _mm512_insertf32x8(lowerBound, _mm512_cvtpd_ps(lbHi), 1);
-    __m512 upperBound = _mm512_broadcast_f32x8(_mm512_cvtpd_ps(ubLo));
-    upperBound = _mm512_insertf32x8(upperBound, _mm512_cvtpd_ps(ubHi), 1);
-    r_argMax = argMax;
-    r_lowerBound = lowerBound;
-    r_upperBound = upperBound;
+
+    __m256 loErr = _mm256_loadu_ps(maxUlpErr);
+    __m256 hiErr = _mm256_loadu_ps(maxUlpErr + kWidth);
+    for (U32 i = 1; i < kNumVecs; ++i)
+    {
+        loErr = _mm256_min_ps(loErr, _mm256_loadu_ps(maxUlpErr + 8*i));
+        hiErr = _mm256_max_ps(hiErr, _mm256_loadu_ps(maxUlpErr + 8*i + kWidth));
+    }
+    r_maxErr = Max(ReduceMax(hiErr), -ReduceMin(loErr));
+
+    // Expand the tolerance by slightly less than half an ulp; this will make anything with slack v.s. the max-error
+    // case round one ulp farther away, so we can narrow our search to solutions whose error is strictly less than
+    // the tolerance.
+    const double maxTol = double(r_maxErr) + 0.49999;
+    
+    for (U32 i = 0; i < 2*kNumVecs; ++i)
+    {
+        const __m256d argMaxRefLo = _mm256_i32gather_pd(ref, _mm_loadu_si128(reinterpret_cast<__m128i*>(argMaxIdx + 8*i)), 8);
+        const __m256d argMaxRefHi =
+            _mm256_i32gather_pd(ref, _mm_loadu_si128(reinterpret_cast<__m128i*>(argMaxIdx + 8*i + 4)), 8);
+        const __m256d argMaxUlpLo = _mm256_cvtps_pd(GetUlp(_mm256_cvtpd_ps(argMaxRefLo)));
+        const __m256d argMaxUlpHi = _mm256_cvtps_pd(GetUlp(_mm256_cvtpd_ps(argMaxRefHi)));
+        const __m256d lbLo =
+            _mm256_fnmadd_pd(_mm256_set1_pd(maxTol), argMaxUlpLo, argMaxRefLo);
+        const __m256d lbHi =
+            _mm256_fnmadd_pd(_mm256_set1_pd(maxTol), argMaxUlpHi, argMaxRefHi);
+        const __m256d ubLo =
+            _mm256_fmadd_pd(_mm256_set1_pd(maxTol), argMaxUlpLo, argMaxRefLo);
+        const __m256d ubHi =
+            _mm256_fmadd_pd(_mm256_set1_pd(maxTol), argMaxUlpHi, argMaxRefHi);
+        __m256 lowerBound = _mm256_setr_m128(_mm256_cvtpd_ps(lbLo), _mm256_cvtpd_ps(lbHi));
+        __m256 upperBound = _mm256_setr_m128(_mm256_cvtpd_ps(ubLo), _mm256_cvtpd_ps(ubHi));
+        r_argMax[i] = _mm256_load_ps(argMax + 8*i);
+        r_lowerBound[i] = lowerBound;
+        r_upperBound[i] = upperBound;
+    }
+    r_numFullEvals += nSteps;
     return true;
 }
 
 void OptimizeCoefs(U32 seed = 0)
 {
     // The coefficients that we'll try to optimize.
-    float coefs[16]{
-                     5.41353924e-03f,
-                     -3.32472920e-02f,
-                     9.59496498e-02f,
-                     -1.80703834e-01f,
-                     2.66505808e-01f,
-                     -3.55522752e-01f,
-                     4.80219364e-01f,
-                     -7.21309245e-01f,
-                     1.44269466e+00f,
+    static constexpr U32 kCoefBufLen = 16;
+    alignas(32) float coefs[kCoefBufLen]{
+        -5.93803041e-02f,
+            1.46333009e-01f,
+            -1.90639019e-01f,
+            2.10152701e-01f,
+            -2.40228832e-01f,
+            2.88294435e-01f,
+            -3.60665351e-01f,
+            4.80903596e-01f,
+            -7.21347809e-01f,
+            1.44269502e+00f
     };
-    static constexpr U32 nCoefs = 9;
+    static constexpr U32 nCoefs = 10;
 
-    static constexpr float a = 0.5f;
-    static constexpr float b = 2.0f;
-    //const float stepSize = 1.0f * Min(GetUlp(a), GetUlp(b));
-    const float stepSize = 0x1p-24f;
-    U32 nSteps = _mm_cvtss_i32(_mm_div_round_ss(
-        _mm_set_ss(b - a), _mm_set_ss(stepSize), _MM_FROUND_TO_POS_INF | _MM_FROUND_NO_EXC));
-    {
-        const __m128 calcB =
-            _mm_fmadd_ss(_mm_set_ss(stepSize), _mm_set_ss(float(nSteps)), _mm_set_ss(a));
-        const __m128 deltaB = _mm_sub_ss(calcB, _mm_set_ss(b));
-        const __m128 extraStepsFloat = _mm_div_ss(deltaB, _mm_set_ss(stepSize));
-        const U32 nExtraSteps = _mm_cvtss_i32(extraStepsFloat);
-        nSteps -= nExtraSteps;
-    }
+    // Compute the minimum number of steps needed at the given step size to cover the full interval.
+    U32 nSteps = _mm_cvt_ss2si(_mm_div_ss(
+        _mm_set_ss(b - a), _mm_set_ss(kStepSize)));
+    const __m128 calcB =
+        _mm_fmadd_ss(_mm_set_ss(kStepSize), _mm_set_ss(float(nSteps)), _mm_set_ss(a));
+    const __m128 deltaB = _mm_sub_ss(calcB, _mm_set_ss(b));
+    __m128 extraStepsFloat = _mm_div_ss(deltaB, _mm_set_ss(kStepSize));
+    extraStepsFloat = _mm_max_ps(extraStepsFloat, _mm_setzero_ps());
+    const U32 nExtraSteps = _mm_cvt_ss2si(extraStepsFloat);
+    nSteps -= nExtraSteps;
     nSteps = (nSteps + 15) & U32(-16);
+
+    // Evaluate the ref in double-precision at every test point.
     double* ref = reinterpret_cast<double*>(_mm_malloc(nSteps * sizeof(double), 4096));
     for (U32 i = 0; i < nSteps; ++i)
     {
-        float x = a + stepSize * float(i);
-        ref[i] = std::log2(double(x));
+        float x = a + kStepSize * float(i);
+        ref[i] = REF_FXN(double(x));
     }
 
-    __m512 argMax, lowerBound, upperBound;
+    __m256 argMax[2*kNumVecs]; 
+    __m256 lowerBound[2*kNumVecs];
+    __m256 upperBound[2*kNumVecs];
     float maxErr = 1e10f;
+    U64 numFullEvals = 0;
 
     // Compute max ulp error from starting coefs, and 16 of the worst cases (worst case for each lane).
-    if (!UpdateMaxError(
-            argMax, lowerBound, upperBound, maxErr, coefs, a, b, stepSize, nSteps, ref))
+    if (!UpdateMaxError(argMax, lowerBound, upperBound, maxErr, numFullEvals, coefs, a, b, kStepSize, nSteps, ref))
     {
         puts("Failed to find initial max error!");
         fflush(stdout);
@@ -398,83 +375,92 @@ void OptimizeCoefs(U32 seed = 0)
 
     // Now that we've found the worst-case error, try random coef perturbations until we improve
     // the worst case. Once we do, check the rest of the floats.
-    //std::mt19937 gen;
-    //std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
 
     // "Random" values to use for generating new coefs to try.
-    constexpr U32 kHash = 0x9e3779b9;
-    constexpr U32 kNumHash = 16;
-    static_assert(kNumHash >= nCoefs, "L");
-    alignas(64) U32 hash[kNumHash];
-    hash[0] = _mm_crc32_u32(12345 + seed, kHash);
-    hash[1] = _mm_crc32_u32(54321 + seed, kHash);
-    hash[2] = _mm_crc32_u32(67890 + seed, kHash);
-    hash[3] = _mm_crc32_u32(98765 + seed, kHash);
-    for (U32 i = 4; i < kNumHash; i += 4)
+    constexpr U32 kHashConst = 0x9e3779b9;
+    const __m128i hashConst = _mm_set1_epi32(kHashConst);
+    alignas(32) U32 hash[kCoefBufLen];
+    for (U32 i = 0; i < kCoefBufLen; ++i)
     {
-        hash[i + 0] = _mm_crc32_u32(hash[i + 0 - 4], kHash);
-        hash[i + 1] = _mm_crc32_u32(hash[i + 1 - 4], kHash);
-        hash[i + 2] = _mm_crc32_u32(hash[i + 2 - 4], kHash);
-        hash[i + 3] = _mm_crc32_u32(hash[i + 3 - 4], kHash);
+        hash[i] = seed + i;
+    }
+    for (U32 i = 0; i < kCoefBufLen; i += 4)
+    {
+        __m128i* p = reinterpret_cast<__m128i*>(hash + i);
+        __m128i x = _mm_loadu_si128(p);
+        x = _mm_aesenc_si128(x, hashConst);
+        _mm_storeu_si128(p, x);
     }
 
     bool changedCoef = true;
     while (true)
     {
         changedCoef = false;
-        float deltaSize = 1.0f;
-        U32 shiftIdx = 0;
+        I32 shiftIdx = -1;
 
-        while (shiftIdx < 23 && deltaSize > 0x1p-23f)
+        while (shiftIdx < 23)
         {
-            printf("Searching w/ coef shift %u\n", shiftIdx);
+            printf("Searching w/ coef shift %d\n", shiftIdx);
             constexpr U32 kMaxAttempts = 10'000'000;
             constexpr U32 kMaxFullAttempts = 10'000;
             U32 numAttempts = 0;
             U32 numFullAttempts = 0;
+            numFullEvals = 0;
             do
             {
                 ++numAttempts;
+                const I32 shift = Max(shiftIdx, 0);
+                const float scale = (shiftIdx == -1) ? 0x1p-22f : 0x1p-23f;
                 // Generate new coefs.
-                alignas(64) float newCoefs[kNumHash];
-                //for (U32 j = 0; j < nCoefs; ++j)
-                //{
-                    //newCoefs[j] = coefs[j] + deltaSize * dist(gen);
-                //}
-                static_assert(kNumHash == 16, "Only implemented for 1 vec");
-                __m512i coi = _mm512_load_si512(hash);
-                __m512 co = _mm512_xor_ps(_mm512_castsi512_ps(_mm512_and_si512(coi, _mm512_set1_epi32(0x8000'0000))), _mm512_cvtepi32_ps(_mm512_srlv_epi32(_mm512_and_si512(coi, _mm512_set1_epi32(0x007f'ffff)), _mm512_set1_epi32(shiftIdx))));
-                co = _mm512_fmadd_ps(co, _mm512_set1_ps(0x1p-23f), _mm512_set1_ps(1.0f));
-				co = _mm512_mul_ps(co, _mm512_load_ps(coefs));
-                _mm512_store_ps(newCoefs, co);
-                for (U32 j = 0; j < nCoefs; ++j)
+                alignas(32) float newCoefs[kCoefBufLen];
+                static_assert(kCoefBufLen % 8 == 0, "Only implemented for multiple of 8");
+                for (U32 i = 0; i < kCoefBufLen; i += 8)
                 {
-                    hash[j] = _mm_crc32_u32(hash[j], kHash);
+                    __m256i h = _mm256_loadu_si256(reinterpret_cast<__m256i *>(hash + i));
+                    __m256 co = _mm256_xor_ps(
+                        _mm256_castsi256_ps(_mm256_and_si256(h, _mm256_set1_epi32(0x8000'0000))),
+                        _mm256_cvtepi32_ps(
+                            _mm256_srlv_epi32(_mm256_and_si256(h, _mm256_set1_epi32(0x007f'ffff)),
+                                              _mm256_set1_epi32(shift))));
+                    co = _mm256_fmadd_ps(co, _mm256_set1_ps(scale), _mm256_set1_ps(1.0f));
+                    co = _mm256_mul_ps(co, _mm256_load_ps(coefs + i));
+                    _mm256_store_ps(newCoefs + i, co);
+
+                }
+
+                for (U32 i = 0; i < kCoefBufLen; i += 4)
+                {
+                    __m128i* p = reinterpret_cast<__m128i*>(hash + i);
+                    __m128i x = _mm_loadu_si128(p);
+                    x = _mm_aesenc_si128(x, hashConst);
+                    _mm_storeu_si128(p, x);
                 }
 
                 // Check if they pass the current worst-case error cases.
-                const __m512 worstResults = Log2f(argMax, newCoefs);
+                __m256 failMask = _mm256_setzero_ps();
+                for (U32 i = 0; i < 2*kNumVecs; ++i)
                 {
-                    const __mmask16 failLo =
-                        _mm512_cmp_ps_mask(worstResults, lowerBound, _CMP_LE_OQ);
-                    const __mmask16 failHi =
-                        _mm512_cmp_ps_mask(worstResults, upperBound, _CMP_GE_OQ);
-                    if (failLo || failHi)
-                    {
-                        continue;
-                    }
+                    const __m256 worstResults = TEST_FXN(argMax[i], newCoefs);
+                    const __m256 failLo = _mm256_cmp_ps(worstResults, lowerBound[i], _CMP_LE_OQ);
+                    const __m256 failHi = _mm256_cmp_ps(worstResults, upperBound[i], _CMP_GE_OQ);
+                    failMask = _mm256_or_ps(failLo, _mm256_or_ps(failHi, failMask));
                 }
+                if (_mm256_movemask_ps(failMask))
+                {
+                    continue;
+                }
+
                 ++numFullAttempts;
                 const bool newRecord = UpdateMaxError(
-                    argMax, lowerBound, upperBound, maxErr, newCoefs, a, b, stepSize, nSteps, ref);
+                    argMax, lowerBound, upperBound, maxErr, numFullEvals, newCoefs, a, b, kStepSize, nSteps, ref);
                 if (newRecord)
                 {
-                    printf("Found better max error: %1.9f\n", maxErr);
+                    printf("Found better max error: %.9f\n", maxErr);
                     memcpy(coefs, newCoefs, nCoefs * sizeof(float));
                     FILE* outFile = fopen("FinalCoefs.txt", "w");
                     for (U32 i = 0; i < nCoefs; ++i)
                     {
-                        fprintf(outFile, "%1.8ef\n", coefs[i]);
+                        fprintf(outFile, "%.8ef\n", coefs[i]);
                     }
                     fclose(outFile);
                     changedCoef = true;
@@ -483,14 +469,19 @@ void OptimizeCoefs(U32 seed = 0)
 
             if (numAttempts == kMaxAttempts)
             {
-                printf("Finished %u short attempts, %u went full\n", kMaxAttempts, numFullAttempts);
+                printf("Finished %u short attempts, %u went full, %lu full evals\n",
+                       numAttempts,
+                       numFullAttempts,
+                       numFullEvals);
             }
             else
             {
-                printf("Finished %u full attempts out of %u attempts\n", kMaxFullAttempts, numAttempts);
+                printf("Finished %u full attempts out of %u attempts, %lu full evals\n",
+                       numFullAttempts,
+                       numAttempts,
+                       numFullEvals);
             }
             ++shiftIdx;
-            deltaSize *= 0.5f;
         }
     }
 
@@ -507,25 +498,160 @@ void OptimizeCoefs(U32 seed = 0)
     _mm_free(ref);
 }
 
+void ReportAccuracyAtan2(float rangeStart, float rangeEnd, float step)
+{ 
+    __m256 maxAbsErr = _mm256_setzero_ps(); 
+    __m256 minAbsErr = _mm256_setzero_ps(); 
+    __m256 sumSqrAbsErr = _mm256_setzero_ps(); 
+    __m256 maxRelErr = _mm256_setzero_ps(); 
+    __m256 minRelErr = _mm256_setzero_ps(); 
+    __m256 sumSqrRelErr = _mm256_setzero_ps(); 
+    __m256 maxUlpErr = _mm256_setzero_ps(); 
+    __m256 minUlpErr = _mm256_setzero_ps(); 
+    __m256 sumSqrUlpErr = _mm256_setzero_ps(); 
+ 
+    const float a = float(rangeStart); 
+    const float b = float(rangeEnd); 
+    const float stepSize = float(step); 
+    const U32 nSteps = _mm_cvtss_i32(_mm_div_ss(_mm_set_ss(b - a), _mm_set_ss(stepSize))); 
+    for (U32 i = 0; i < nSteps; ++i) 
+    { 
+        float x = a + stepSize * float(i);
+        for (U32 j = 0; j < nSteps; j += 8)
+        {
+            alignas(32) float y[8];
+            alignas(64) double ref[8];
+            for (U32 jj = 0; jj < 8; ++jj)
+            {
+                U32 k = j + jj;
+                y[jj] = a + stepSize * float(k);
+                ref[jj] = atan2(double(y[jj]), double(x));
+            }
+            const __m256 xm = _mm256_set1_ps(x);
+            const __m256 ym = _mm256_loadu_ps(y);
+            const __m256 zm = Atan2(ym, xm);
+            const __m256 outOfBounds = _mm256_cmp_ps(ym, _mm256_set1_ps(b), _CMP_GT_OQ);
+ 
+            /* compute abs error in double precision */ 
+            const __m256d zLo = _mm256_cvtps_pd(_mm256_castps256_ps128(zm));
+            const __m256d zHi = _mm256_cvtps_pd(_mm256_extractf128_ps(zm, 1));
+            const __m256d refLo = _mm256_loadu_pd(ref);
+            const __m256d refHi = _mm256_loadu_pd(ref + 4);
+            const __m256d absErrLo = _mm256_sub_pd(zLo, refLo);
+            const __m256d absErrHi = _mm256_sub_pd(zHi, refHi);
+            __m256 absErr = _mm256_setr_m128(_mm256_cvtpd_ps(absErrLo), _mm256_cvtpd_ps(absErrHi));
+            absErr = _mm256_andnot_ps(outOfBounds, absErr);
+ 
+            /* compute absolute and relative error */
+            __m256 ulp = GetUlp(zm);
+            __m256 relErr = _mm256_div_ps(
+                absErr,
+                Abs(_mm256_fmadd_ps(_mm256_set1_ps(stepSize), _mm256_set1_ps(0x1p-30f), zm)));
+            __m256 ulpErr = _mm256_div_ps(absErr, ulp);
+            maxAbsErr = _mm256_max_ps(maxAbsErr, absErr);
+            minAbsErr = _mm256_min_ps(minAbsErr, absErr);
+            sumSqrAbsErr = _mm256_fmadd_ps(absErr, absErr, sumSqrAbsErr);
+            maxRelErr = _mm256_max_ps(maxRelErr, relErr);
+            minRelErr = _mm256_min_ps(minRelErr, relErr);
+            sumSqrRelErr = _mm256_fmadd_ps(relErr, relErr, sumSqrRelErr);
+            maxUlpErr = _mm256_max_ps(maxUlpErr, ulpErr);
+            minUlpErr = _mm256_min_ps(minUlpErr, ulpErr);
+            sumSqrUlpErr = _mm256_fmadd_ps(ulpErr, ulpErr, sumSqrUlpErr);
+            if (_mm256_movemask_ps(_mm256_cmp_ps(ulpErr, _mm256_setzero_ps(), _CMP_UNORD_Q)))
+            {
+                printf("NaN Error\n");
+            }
+        }
+    } 
+ 
+        /* reduce errors from vectors to single values, and print results */ 
+        float rmsAbsErr = sqrt(ReduceAdd(sumSqrAbsErr) / float(nSteps*nSteps)); 
+        float rmsRelErr = sqrt(ReduceAdd(sumSqrRelErr) / float(nSteps*nSteps)); 
+        float rmsUlpErr = sqrt(ReduceAdd(sumSqrUlpErr) / float(nSteps*nSteps)); 
+        printf("Error profile for Atan2 in [%f, %f)^2: \n", a, b); 
+        printf("    Abs err: [% 9.3g, % 9.3g]; RMS % 9.3g\n", 
+               ReduceMin(minAbsErr), 
+               ReduceMax(maxAbsErr), 
+               rmsAbsErr); 
+        printf("    Rel err: [% 9.3g, % 9.3g]; RMS % 9.3g\n", 
+               ReduceMin(minRelErr), 
+               ReduceMax(maxRelErr), 
+               rmsRelErr); 
+        printf("    Ulp err: [% 9.3g, % 9.3g]; RMS % 9.3g\n\n\n", 
+               ReduceMin(minUlpErr), 
+               ReduceMax(maxUlpErr), 
+               rmsUlpErr); 
+}
+
 void CheckSpecialCases()
 {
-    constexpr float kInf = std::numeric_limits<float>::infinity();
-    constexpr float kNan = std::numeric_limits<float>::quiet_NaN();
-    alignas(64) float xArr[16] = { -kInf, -1.0f, kNan, 0.0f, 1e-10f, 1.0f - 0x1p-24f, 1.0f, 2.0f - 0x1p-23f, 2.0f, 1e20f, kInf};
-    alignas(64) float ref[16];
+    alignas(64) float xArr[16] = { -kInf, -kMax, -kMin, -0.0f, 0.0f, kMin, kMax, kInf, kNan };
+    alignas(64) float yArr[16];
+    alignas(64) float refArr[16];
     for (U32 i = 0; i < 16; ++i)
     {
-        ref[i] = std::log2f(xArr[i]);
+        refArr[i] = REF_FXN_FLOAT(xArr[i]);
     }
-    __m512 x = _mm512_loadu_ps(xArr);
-    __m512 y = Log2f(x);
-    printf("Breakpoint me");
+    __m256 x = _mm256_loadu_ps(xArr);
+    __m256 y = TEST_FXN(x);
+    _mm256_storeu_ps(yArr, y);
+    __m256 ref = _mm256_loadu_ps(refArr);
+    __m256i matchLo = _mm256_cmpeq_epi32(_mm256_castps_si256(y), _mm256_castps_si256(ref));
+    U32 diffLo = (~_mm256_movemask_ps(_mm256_castsi256_ps(matchLo))) & 255;
+    x = _mm256_loadu_ps(xArr + 8);
+    y = TEST_FXN(x);
+    _mm256_storeu_ps(yArr + 8, y);
+    ref = _mm256_loadu_ps(refArr + 8);
+    __m256i matchHi = _mm256_cmpeq_epi32(_mm256_castps_si256(y), _mm256_castps_si256(ref));
+    U32 diffHi = (~_mm256_movemask_ps(_mm256_castsi256_ps(matchHi))) & 255;
+    const U32 diffMask = diffLo | (diffHi << 8);
+    if (diffMask)
+    {
+        printf("Breakpoint me");
+    }
+}
+
+double foo1(double x, double& m, double& d2, double& e)
+{
+    double d = __builtin_floor((0.5 * kInvPid) * x);
+    x = Fma(-2.0 * kPi3d, d, Fma(-2.0 * kPi2d, d, Fma(-2.0 * kPid, d, x)));
+    m = x;
+    d = __builtin_floor((0.5 * kInvPid) * x);
+    d2 = d;
+    x = Fma(-2.0 * kPid, d, x);
+    e = x;
+    x = (x == (2.0 * kPid)) ? 0.0 : ((x < 0.0) ? 0.0 : x);
+    return x;
+}
+
+double foo2(double x, double& m, double& d2, double& e)
+{
+    double d = __builtin_floor((0.5 * kInvPid) * x);
+    x = Fma(-2.0 * kPi3d, d, Fma(-2.0 * kPi2d, d, Fma(-2.0 * kPid, d, x)));
+    m = x;
+    d = __builtin_floor((0.5 * kInvPid) * x);
+    d2 = d;
+    x = Fma(-2.0 * kPi2d, d, Fma(-2.0 * kPid, d, x));
+    e = x;
+    x = (x == (2.0 * kPid)) ? 0.0 : (x < 0.0) ? 0.0 : x;
+    return x;
+}
+
+double GetUlp(double x)
+{
+    const __m128d a = _mm_set_sd(x);
+    const __m128d b = _mm_castsi128_pd(_mm_xor_si128(_mm_castpd_si128(a), _mm_set1_epi64x(1)));
+    return _mm_cvtsd_f64(_mm_andnot_pd(_mm_set_sd(-0.0), _mm_sub_sd(a, b)));
 }
 
 int main()
 {
+    _MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
+    _MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
     //CalcAccuracy();
-    OptimizeCoefs();
-    //WriteToFile();
+    //OptimizeCoefs();
+    WriteToFile();
+    //ReportAccuracyAtan2(-1.0f, 1.0f, 0x1p-12f);
+    //RunNear(0.75f, 2.0 * kStepSize);
     //CheckSpecialCases();
 }

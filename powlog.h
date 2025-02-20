@@ -1,43 +1,40 @@
-//#ifndef NEM_POWLOG_ALLOW_IMPL
-//#error "Do not include this file directly, include powlog.h instead."
-//#endif
 #pragma once
 
 #include "common.h"
 
 // Single precision, AVX2 SIMD for x86-64 CPUs.
 #ifdef __AVX2__
-__m128 __vectorcall Exp2f(__m128 x);
-__m256 __vectorcall Exp2f(__m256 x);
-__m128 __vectorcall Expf(__m128 x);
-__m256 __vectorcall Expf(__m256 x);
-__m128 __vectorcall Exp10f(__m128 x);
-__m256 __vectorcall Exp10f(__m256 x);
-__m128 __vectorcall Powf(__m128 x, __m128 y);
-__m256 __vectorcall Powf(__m256 x, __m256 y);
-__m128 __vectorcall Log2f(__m128 x);
-__m256 __vectorcall Log2f(__m256 x);
-__m128 __vectorcall Logf(__m128 x);
-__m256 __vectorcall Logf(__m256 x);
-__m128 __vectorcall Log10f(__m128 x);
-__m256 __vectorcall Log10f(__m256 x);
-__m128 __vectorcall LogBasef(__m128 b, __m128 x);
-__m256 __vectorcall LogBasef(__m256 b, __m256 x);
+static inline __m128 __vectorcall Exp2(__m128 x);
+static inline __m256 __vectorcall Exp2(__m256 x);
+static inline __m128 __vectorcall Exp(__m128 x);
+static inline __m256 __vectorcall Exp(__m256 x);
+static inline __m128 __vectorcall Exp10(__m128 x);
+static inline __m256 __vectorcall Exp10(__m256 x);
+static inline __m128 __vectorcall Pow(__m128 x, __m128 y);
+static inline __m256 __vectorcall Pow(__m256 x, __m256 y);
+static inline __m128 __vectorcall Log2(__m128 x);
+static inline __m256 __vectorcall Log2(__m256 x);
+static inline __m128 __vectorcall Log(__m128 x);
+static inline __m256 __vectorcall Log(__m256 x);
+static inline __m128 __vectorcall Log10(__m128 x);
+static inline __m256 __vectorcall Log10(__m256 x);
+static inline __m128 __vectorcall LogBase(__m128 b, __m128 x);
+static inline __m256 __vectorcall LogBase(__m256 b, __m256 x);
 #endif // __AVX2__
 
 #ifdef __AVX512F__
-__m512 __vectorcall Exp2f(__m512 x);
-__m512 __vectorcall Expf(__m512 x);
-__m512 __vectorcall Exp10f(__m512 x);
-__m512 __vectorcall Powf(__m512 x, __m512 y);
-__m512 __vectorcall Log2f(__m512 x);
-__m512 __vectorcall Logf(__m512 x);
-__m512 __vectorcall Log10f(__m512 x);
-__m512 __vectorcall LogBasef(__m512 b, __m512 x);
+static inline __m512 __vectorcall Exp2(__m512 x);
+static inline __m512 __vectorcall Exp(__m512 x);
+static inline __m512 __vectorcall Exp10(__m512 x);
+static inline __m512 __vectorcall Pow(__m512 x, __m512 y);
+static inline __m512 __vectorcall Log2(__m512 x);
+static inline __m512 __vectorcall Log(__m512 x);
+static inline __m512 __vectorcall Log10(__m512 x);
+static inline __m512 __vectorcall LogBase(__m512 b, __m512 x);
 #endif // __AVX512F__
 
 #ifdef __AVX2__
-__m128 __vectorcall Exp2f(__m128 x)
+static inline __m128 __vectorcall Exp2(__m128 x)
 {
     const __m128 round = _mm_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
     const __m128 frac = _mm_sub_ps(x, round);
@@ -61,7 +58,7 @@ __m128 __vectorcall Exp2f(__m128 x)
     return res;
 }
 
-__m256 __vectorcall Exp2f(__m256 x)
+static inline __m256 __vectorcall Exp2(__m256 x)
 {
     const __m256 round = _mm256_round_ps(x, _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC);
     const __m256 frac = _mm256_sub_ps(x, round);
@@ -84,10 +81,61 @@ __m256 __vectorcall Exp2f(__m256 x)
     res = _mm256_blendv_ps(res, oobFixup, oob);
     return res;
 }
+
+static inline __m256 __vectorcall Exp(__m256 x) { return Exp2(_mm256_mul_ps(x, _mm256_set1_ps(1.44269504f))); }
+
+static inline __m256 __vectorcall Exp10(__m256 x) { return Exp2(_mm256_mul_ps(x, _mm256_set1_ps(3.321928095f))); }
+
+static inline __m256 __vectorcall Pow(__m256 x, __m256 y) { return Exp2(_mm256_mul_ps(Log2(x), y)); }
+
+static inline __m256 __vectorcall Log2(__m256 x)
+{
+    __m256i xi = _mm256_castps_si256(x);
+    __m256i exp = _mm256_and_si256(xi, _mm256_set1_epi32(0xff80'0000));
+    __m256i mantHi = _mm256_slli_epi32(_mm256_and_si256(xi, _mm256_set1_epi32(0x0040'0000)), 1);
+    exp = _mm256_add_epi32(exp, mantHi);
+    __m256i mant = _mm256_or_si256(_mm256_andnot_si256(
+        _mm256_set1_epi32(0xff80'0000), xi), _mm256_set1_epi32(0x3f80'0000));
+    mant = _mm256_sub_epi32(mant, mantHi);
+    exp = _mm256_srai_epi32(exp, 23);
+    const __m256 setNegInf = _mm256_castsi256_ps(_mm256_cmpeq_epi32(exp, _mm256_setzero_si256()));
+    const __m256 fixup = _mm256_or_ps(setNegInf, _mm256_castsi256_ps(_mm256_cmpeq_epi32(exp, _mm256_set1_epi32(255))));
+    const __m256 setNan = _mm256_cmp_ps(x, _mm256_setzero_ps(), _CMP_LT_OQ);
+    __m256 base = _mm256_or_ps(_mm256_set1_ps(0x1.8p+23f), _mm256_castsi256_ps(exp));
+    base = _mm256_sub_ps(base, _mm256_set1_ps(0x1.8p+23f + 127.0f));
+    const __m256 p = _mm256_sub_ps(_mm256_castsi256_ps(mant), _mm256_set1_ps(1.0f));
+
+    //__m256 res =                  _mm256_set1_ps(7.21029267e-02f);
+    //res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(-1.69770077e-01f));
+    //res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(2.17100710e-01f));
+    //res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(-2.43749201e-01f));
+    //res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(2.88213283e-01f));
+    //res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(-3.60513300e-01f));
+    //res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(4.80900317e-01f));
+    //res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(-7.21349299e-01f));
+    //res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(1.44269502e+00f));
+
+    __m256 res =                  _mm256_set1_ps(-5.93803041e-02f);
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(1.46333009e-01f));
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(-1.90639019e-01f));
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(2.10152701e-01f));
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(-2.40228832e-01f));
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(2.88294435e-01f));
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(-3.60665351e-01f));
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(4.80903596e-01f));
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(-7.21347809e-01f));
+    res = _mm256_fmadd_ps(res, p, _mm256_set1_ps(1.44269502e+00f));
+
+    __m256 lastMul = _mm256_blendv_ps(p, x, fixup);
+    lastMul = _mm256_blendv_ps(lastMul, _mm256_set1_ps(kInf), setNegInf);
+    lastMul = _mm256_blendv_ps(lastMul, _mm256_set1_ps(kNan), setNan);
+    res = _mm256_fmadd_ps(res, lastMul, base);
+    return res;
+}
 #endif // __AVX2__
 
 #ifdef __AVX512F__
-__m512 __vectorcall Exp2f(__m512 x)
+static inline __m512 __vectorcall Exp2(__m512 x)
 {
     const __m512 round = _mm512_roundscale_ps(x, _MM_FROUND_TO_NEAREST_INT);
     const __m512 frac = _mm512_sub_ps(x, round);
@@ -111,17 +159,21 @@ __m512 __vectorcall Exp2f(__m512 x)
     return res;
 }
 
-__m512 __vectorcall Expf(__m512 x) { return Exp2f(_mm512_mul_ps(x, _mm512_set1_ps(1.44269504f))); }
+static inline __m512 __vectorcall Exp(__m512 x) { return Exp2(_mm512_mul_ps(x, _mm512_set1_ps(1.44269504f))); }
 
-__m512 __vectorcall Exp10f(__m512 x) { return Exp2f(_mm512_mul_ps(x, _mm512_set1_ps(3.321928095f))); }
+static inline __m512 __vectorcall Exp10(__m512 x) { return Exp2(_mm512_mul_ps(x, _mm512_set1_ps(3.321928095f))); }
 
-__m512 __vectorcall Powf(__m512 x, __m512 y) { return Exp2f(_mm512_mul_ps(Log2f(x), y)); }
+static inline __m512 __vectorcall Pow(__m512 x, __m512 y) { return Exp2(_mm512_mul_ps(Log2(x), y)); }
 
-__m512 __vectorcall Log2f(__m512 x)
+static inline __m512 __vectorcall Log2(__m512 x)
 {
-    __m512i exp = _mm512_and_si512(_mm512_castps_si512(x), _mm512_set1_epi32(0xff80'0000));
+    __m512i xi = _mm512_castps_si512(x);
+    __m512i exp = _mm512_and_si512(xi, _mm512_set1_epi32(0xff80'0000));
+    __m512i mantHi = _mm512_slli_epi32(_mm512_and_si512(xi, _mm512_set1_epi32(0x0040'0000)), 1);
+    exp = _mm512_add_epi32(exp, mantHi);
     __m512i mant = _mm512_ternarylogic_epi32(
-        _mm512_set1_epi32(0xff80'0000), _mm512_castps_si512(x), _mm512_set1_epi32(0x3f80'0000), 0xac);
+        _mm512_set1_epi32(0xff80'0000), _mm512_set1_epi32(0x3f80'0000), xi, 0xca);
+    mant = _mm512_sub_epi32(mant, mantHi);
     exp = _mm512_srai_epi32(exp, 23);
     const __mmask16 fixup = _mm512_cmple_epi32_mask(exp, _mm512_setzero_si512()) |
                             _mm512_cmpeq_epi32_mask(exp, _mm512_set1_epi32(255));
@@ -142,7 +194,7 @@ __m512 __vectorcall Log2f(__m512 x)
     res = _mm512_fmadd_ps(res, p, _mm512_set1_ps(-7.21309245e-01f));
     res = _mm512_fmadd_ps(res, p, _mm512_set1_ps(1.44269466e+00f));
     __m512 lastMul = _mm512_mask_blend_ps(fixup, p, x);
-    lastMul = _mm512_mask_blend_ps(setNegInf, lastMul, _mm512_set1_ps(kNegInf));
+    lastMul = _mm512_mask_blend_ps(setNegInf, lastMul, _mm512_set1_ps(-kInf));
     lastMul = _mm512_mask_blend_ps(setNan, lastMul, _mm512_set1_ps(kNan));
     //__m512 lastMul = _mm512_castsi512_ps(
     //    _mm512_and_epi32(_mm512_srai_epi32(bad, 31), _mm512_set1_epi32(0x7fc0'0000)));
